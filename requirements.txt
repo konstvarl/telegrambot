@@ -1,3 +1,5 @@
 pyTelegramBotAPI==4.26.0
 python-dotenv==1.0.1
 requests==2.32.3
+peewee~=3.17.9
+amadeus~=11.0.0
