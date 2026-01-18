@@ -1,7 +1,7 @@
 from telebot.types import CallbackQuery
 
 from config_data.config import SORT_COMMANDS
-from handlers.custom.hotel import search_hotels
+from handlers.custom.hotel import do_search_hotels
 from loader import bot
 from states.user_states import States
 from utils.hotel import sorting_order
@@ -39,7 +39,8 @@ def get_sorting_criteria(callback_query: CallbackQuery) -> None:
     bot.answer_callback_query(callback_query.id)
     safe_delete_message(user_id, callback_query.message.message_id)
     if return_to:
+        bot.set_state(user_id, States.search_hotels_stop, chat_id)
         bot.send_message(chat_id, f'Сортировка отелей {sorting_order(command)}')
         return
     bot.set_state(user_id, States.search_hotels, chat_id)
-    search_hotels(callback_query)
+    do_search_hotels(callback_query)

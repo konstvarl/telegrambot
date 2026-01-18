@@ -4,7 +4,7 @@ from telebot.types import Message, ReplyKeyboardRemove
 
 from config_data.config import SORT_COMMANDS
 from database.data_storage import User
-from handlers.custom.hotel import search_hotels
+from handlers.custom.hotel import do_search_hotels
 from loader import bot
 from states.user_states import States
 from utils.user import get_user_and_chat_ids
@@ -41,7 +41,7 @@ def bot_start(message: Message) -> None:
             data['request']['command'] = command
             data['data_for_search'] = True
             data['session_id'] = str(uuid.uuid4())
-        search_hotels(message)
+        do_search_hotels(message)
     else:
         bot.set_state(user_id, States.city_search, chat_id)
         with bot.retrieve_data(user_id, chat_id) as data:

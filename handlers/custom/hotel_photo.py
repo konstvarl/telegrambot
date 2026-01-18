@@ -11,7 +11,7 @@ from utils.validation import require_valid_session
 
 @bot.callback_query_handler(
     func=lambda call: call.data.startswith('photo_page'),
-    state=States.display_hotels
+    state=States.search_hotels_stop
 )
 @require_valid_session()
 def photo_change(callback_query: CallbackQuery) -> None:

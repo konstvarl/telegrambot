@@ -27,7 +27,7 @@ from utils.validation import require_valid_session
 
 @bot.callback_query_handler(
     func=lambda call: call.data.startswith('hotel_page'),
-    state=States.display_hotels
+    state=States.search_hotels_stop
 )
 @require_valid_session()
 def hotel_change(callback_query: CallbackQuery) -> None:
@@ -44,6 +44,7 @@ def hotel_change(callback_query: CallbackQuery) -> None:
             'message_hotel_id': callback_query.message.message_id,
         })
 
+    bot.set_state(user_id, States.display_hotels, chat_id)
     try:
         with media_lock(bot, user_id, chat_id, 'loading_photos'):
             display_hotels(callback_query)
@@ -91,8 +92,7 @@ def accept_hotel_offer(callback_query: CallbackQuery):
         )
 
 
-@bot.message_handler(state=States.search_hotels)
-def search_hotels(message: Union[Message, CallbackQuery]) -> None:
+def do_search_hotels(message: Union[Message, CallbackQuery]) -> None:
     """
     Основная логика поиска отелей:
     1. Получает список отелей в городе.
@@ -130,6 +130,7 @@ def search_hotels(message: Union[Message, CallbackQuery]) -> None:
             radius=search_radius
         )
         if not hotels_by_city:
+            bot.set_state(user_id, States.search_hotels_stop, chat_id)
             safe_edit_message(
                 f'Отели в городе {city_name} не найдены.'
                 f'Измените параметры поиска',
@@ -166,6 +167,7 @@ def search_hotels(message: Union[Message, CallbackQuery]) -> None:
                 hotel['offer'] = offer['offers'][0]
                 hotels_with_offer[hotel_id] = hotel
         if not hotels_with_offer:
+            bot.set_state(user_id, States.search_hotels_stop, chat_id)
             safe_edit_message(
                 f'В городе {city_name} нет доступных отелей на выбранные '
                 f'даты в указанном ценовом диапазоне',
@@ -173,7 +175,6 @@ def search_hotels(message: Union[Message, CallbackQuery]) -> None:
                 loading_message_id,
                 markup=gen_reply_controls_for_display()
             )
-            bot.set_state(user_id, States.display_hotels, chat_id)
             return
         message_info_3 = (f'Отели в городе {city_name} найдены.\n'
                           f'Отели с предложениями найдены.\n'
@@ -189,6 +190,7 @@ def search_hotels(message: Union[Message, CallbackQuery]) -> None:
     except (ClientError, ConnectionError, Timeout, ReadTimeout) as error:
         logger.warning(f'Ошибка при обращении к Amadeus API: {error}, '
                        f'запрос пользователя: {request}')
+        bot.set_state(user_id, States.search_hotels_stop, chat_id)
         safe_edit_message(
             f'⚠️ Проблема с подключением к сервису Amadeus!\n'
             f'Повторите поиск позже, нажав кнопку '
@@ -201,6 +203,7 @@ def search_hotels(message: Union[Message, CallbackQuery]) -> None:
 
     except RequestException as error:
         logger.warning(f'Сетевая ошибка при обращении к Amadeus API: {error}')
+        bot.set_state(user_id, States.search_hotels_stop, chat_id)
         safe_edit_message(
             '🌐 Не удалось связаться с сервером Amadeus.\n'
             'Проверьте соединение с интернетом или попробуйте позже',
@@ -213,6 +216,7 @@ def search_hotels(message: Union[Message, CallbackQuery]) -> None:
     except Exception as error:
         logger.exception(f'Ошибка при поиске отелей: {error}, '
                          f'запрос пользователя: {request}')
+        bot.set_state(user_id, States.search_hotels_stop, chat_id)
         safe_edit_message(
             f'😞 Что-то пошло не так! Повторите поиск позже, '
             f'нажав кнопку {COMMANDS_TO_REPLY_KEYBOARD["Repeat search"]}',
@@ -268,8 +272,14 @@ def search_hotels(message: Union[Message, CallbackQuery]) -> None:
     display_hotels(message)
 
 
+@bot.message_handler(state=States.search_hotels)
+def search_hotels_handler(message: Union[Message, CallbackQuery]) -> None:
+    do_search_hotels(message)
+
+
 @bot.message_handler(
-    func=lambda m: m.text in tuple(COMMANDS_TO_REPLY_KEYBOARD.values())
+    func=lambda m: m.text in tuple(COMMANDS_TO_REPLY_KEYBOARD.values()),
+    state=States.search_hotels_stop
 )
 def display_controls_handler(message: Message) -> None:
     user_id, chat_id = get_user_and_chat_ids(message)
@@ -342,7 +352,8 @@ def display_controls_handler(message: Message) -> None:
         safe_remove_markup(chat_id, message_hotel_id)
         safe_remove_markup(chat_id, message_photo_id)
         bot.set_state(user_id, States.search_hotels, chat_id)
-        search_hotels(message)
+        do_search_hotels(message)
+
         return
 
     if txt == COMMANDS_TO_REPLY_KEYBOARD['Complete']:
@@ -365,7 +376,7 @@ active_photo_loads: dict[int, dict] = {}
 active_photo_loads_lock = threading.Lock()
 
 
-@bot.message_handler(state=States.display_hotels)
+# @bot.message_handler(state=States.display_hotels)
 def display_hotels(message: Message | CallbackQuery) -> None:
     """
     Отображает информацию по текущему отелю и его фотографии.
@@ -386,6 +397,8 @@ def display_hotels(message: Message | CallbackQuery) -> None:
         request_record = data['request_record']
         message_hotel_id = data.get('message_hotel_id')
         message_photo_id = data.get('message_photo_id')
+
+    bot.set_state(user_id, States.search_hotels_stop, chat_id)
     # 2. Отправляем сообщение с описанием отеля
     message_hotel_id = safe_edit_message(
         format_hotel_text(hotel, num_hotel, num_hotels),
