@@ -1,7 +1,7 @@
 from telebot.types import Message
 
 from config_data.config import SORT_COMMANDS
-from handlers.custom.hotel import search_hotels
+from handlers.custom.hotel import do_search_hotels
 from keyboards.inline.sorting_command import gen_markup_command_sorting
 from loader import bot
 from states.user_states import States
@@ -43,10 +43,12 @@ def set_radius(message: Message) -> None:
     )
 
     if return_to:
+        bot.set_state(user_id, States.search_hotels_stop, chat_id)
         return
+
     bot.set_state(user_id, States.sorting_criteria, chat_id)
     if command in SORT_COMMANDS:
-        search_hotels(message)
+        do_search_hotels(message)
     else:
         bot.send_message(
             chat_id,

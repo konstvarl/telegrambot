@@ -12,3 +12,4 @@ class States(StatesGroup):
     display_hotels = State()
     radius = State()
     date_search = State()
+    search_hotels_stop = State()

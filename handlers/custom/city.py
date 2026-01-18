@@ -134,5 +134,8 @@ def city_select(callback_query: CallbackQuery) -> None:
         except NameError:
             data['date_message_id'] = None
 
-    if not return_to:
-        start_calendar(user_id, chat_id, date.today())
+    if return_to:
+        bot.set_state(user_id, States.search_hotels_stop, chat_id)
+        return
+
+    start_calendar(user_id, chat_id, date.today())

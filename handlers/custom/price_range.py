@@ -21,6 +21,7 @@ def set_prices_range(message: Message) -> None:
             return_to = data.pop('return_to', None)
 
         if return_to:
+            bot.set_state(user_id, States.search_hotels_stop, chat_id)
             return
 
         bot.set_state(user_id, States.radius, chat_id)

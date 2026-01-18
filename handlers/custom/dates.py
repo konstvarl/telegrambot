@@ -60,7 +60,9 @@ def date_check_out(message: Message) -> None:
     )
 
     if return_to:
+        bot.set_state(user_id, States.search_hotels_stop, chat_id)
         return
+
     bot.set_state(user_id, States.price_range, chat_id)
     bot.send_message(
         chat_id,
