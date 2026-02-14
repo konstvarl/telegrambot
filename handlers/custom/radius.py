@@ -39,7 +39,7 @@ def set_radius(message: Message) -> None:
 
     bot.send_message(
         chat_id,
-        f'🎯 Ищем отели в радиусе {radius_value} км от центра города {city_name}'
+        f'🎯 Установлен радиус поиска от центра города {city_name}: {radius_value} км'
     )
 
     if return_to:

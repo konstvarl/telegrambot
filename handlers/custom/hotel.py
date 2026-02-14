@@ -7,9 +7,11 @@ from requests import Timeout, ReadTimeout, RequestException
 from telebot.types import CallbackQuery, Message, ReplyKeyboardRemove
 
 from api.request_amadeus import (get_hotel_offer, get_hotels_by_city,
-                                 get_hotel_offers_search, get_hotel_sentiments, logger)
+                                 get_hotel_offers_search, get_hotel_sentiments,
+                                 logger)
 from api.search_hotel_images_url import get_urls_photos_hotel
-from config_data.config import SORT_COMMANDS, PHOTOS, COMMANDS_TO_REPLY_KEYBOARD
+from config_data.config import (SORT_COMMANDS, PHOTOS,
+                                COMMANDS_TO_REPLY_KEYBOARD)
 from database.data_storage import add_request_to_history, Hotel
 from handlers.custom.calendar import start_calendar
 from keyboards.inline.pagination import gen_markup_pagin_hotels
@@ -17,10 +19,15 @@ from keyboards.inline.sorting_command import gen_markup_command_sorting
 from keyboards.reply.controls import gen_reply_controls_for_display
 from loader import bot
 from states.user_states import States
-from utils.hotel import format_hotel_text, sorting_hotels, sorting_order, media_lock
+from utils.exceptions import (ExternalServiceUnavailable, HotelNotFound,
+                              OffersNotFound)
+from utils.hotel import (format_hotel_text, sorting_hotels, sorting_order,
+                         media_lock)
 from utils.hotel_photo import send_hotel_photo, send_message_no_photo
 from utils.parsing import safe_parse_callback_index
-from utils.telegram_safe import safe_delete_message, safe_edit_message, safe_edit_media, safe_remove_markup
+from utils.telegram_safe import (safe_delete_message, safe_edit_message,
+                                 safe_edit_media, safe_remove_markup,
+                                 fail_search)
 from utils.user import get_user_and_chat_ids
 from utils.validation import require_valid_session
 
@@ -31,6 +38,14 @@ from utils.validation import require_valid_session
 )
 @require_valid_session()
 def hotel_change(callback_query: CallbackQuery) -> None:
+    """
+    Обработчик для разбивки отелей на страницы.
+    Изменяет текущий отель и отправляет информацию о новом отеле
+    или фотографии. Если фотографий нет, отправляет сообщение об этом.
+
+    :param callback_query: CallbackQuery
+    :return: None
+    """
     user_id, chat_id = get_user_and_chat_ids(callback_query)
     step = safe_parse_callback_index(callback_query, 2, transform=int)
     bot.answer_callback_query(callback_query.id)
@@ -54,10 +69,18 @@ def hotel_change(callback_query: CallbackQuery) -> None:
 
 @bot.callback_query_handler(
     func=lambda call: call.data.startswith('hotel_offer'),
-    state=States.display_hotels
+    state=States.search_hotels_stop
 )
 @require_valid_session()
 def accept_hotel_offer(callback_query: CallbackQuery):
+    """
+    Обработчик для подтверждения предложения отеля.
+    Проверяет доступность предложения, удаляет сообщение с фото
+    и отправляет ответ.
+
+    :param callback_query: CallbackQuery
+    :return: None
+    """
     user_id, chat_id = get_user_and_chat_ids(callback_query)
 
     with bot.retrieve_data(user_id, chat_id) as data:
@@ -92,62 +115,56 @@ def accept_hotel_offer(callback_query: CallbackQuery):
         )
 
 
-def do_search_hotels(message: Union[Message, CallbackQuery]) -> None:
+def search_hotels_core(
+        request: dict,
+        *,
+        on_progress: callable = None,
+) -> dict:
     """
-    Основная логика поиска отелей:
-    1. Получает список отелей в городе.
-    2. Фильтрует по наличию доступных предложений.
-    3. Получает отзывы.
-    4. Сортирует и выводит результат.
+    Выполняет основную логику поиска отелей, обращаясь к API.
+
+    :param request: Словарь с параметрами поиска.
+    :param on_progress: Callback-функция для отслеживания прогресса.
+    :return: Словарь с результатами поиска.
+    :raises ExternalServiceUnavailable: Если внешний сервис недоступен.
+    :raises HotelNotFound: Если отели по заданным критериям не найдены.
+    :raises OffersNotFound: Если от найденных отелей нет предложений.
+    :raises SentimentsUnavailable: Если не удалось загрузить отзывы.
     """
-    user_id, chat_id = get_user_and_chat_ids(message)
+    def progress(text: str) -> None:
+        if on_progress:
+            on_progress(text)
 
-    with bot.retrieve_data(user_id, chat_id) as data:
-        request = data['request']
-        city = request['city']
-        city_name = city['name']
-        city_iata_code = city['iataCode']
-        check_in_date = str(request['date']['check_in'])
-        check_out_date = str(request['date']['check_out'])
-        price_range = request['range_prices']
-        currency_code = request['currency']['code']
-        search_radius = request['radius']
-        command = request['command']
+    # --- 1. Извлечение параметров из запроса ---
+    city = request['city']
+    city_name = city['name']
+    city_iata_code = city['iataCode']
+    check_in_date = str(request['date']['check_in'])
+    check_out_date = str(request['date']['check_out'])
+    price_range = request['range_prices']
+    currency_code = request['currency']['code']
+    search_radius = request['radius']
+    command = request['command']
 
-    num_hotel = 0
-    message_info_1 = (f'Подождите, получаю информацию\n'
-                      f'о отелях в городе {city_name}...')
-    loading_message = bot.send_message(
-        chat_id,
-        message_info_1
-    )
-    loading_message_id = loading_message.message_id
-
+    # --- 2. Получение списка отелей ---
+    progress(f'Подождите, получаю информацию\n'
+             f'о отелях в городе {city_name}...')
     try:
-        # 1. Получаем список отелей по городу
         hotels_by_city = get_hotels_by_city(
             city_code=city_iata_code,
             radius=search_radius
         )
-        if not hotels_by_city:
-            bot.set_state(user_id, States.search_hotels_stop, chat_id)
-            safe_edit_message(
-                f'Отели в городе {city_name} не найдены.'
-                f'Измените параметры поиска',
-                chat_id,
-                loading_message_id,
-                markup=gen_reply_controls_for_display()
-            )
-            return
-        message_info_2 = (f'Отели в городе {city_name} найдены.\n'
-                          f'Подождите, получаю предложения от отелей...')
-        loading_message_id = safe_edit_message(
-            message_info_2,
-            chat_id,
-            loading_message_id
-        )
-        # 2. Получаем предложения и фильтруем только доступные
-        hotel_ids = [hotel['hotelId'] for hotel in hotels_by_city['data']]
+    except (ClientError, ConnectionError, Timeout, ReadTimeout) as error:
+        raise ExternalServiceUnavailable('get_hotels_by_city') from error
+
+    if not hotels_by_city.get('data'):
+        raise HotelNotFound()
+
+    # --- 3. Получение предложений (offers) ---
+    progress(f'Отели в городе {city_name} найдены.\n'
+             f'Подождите, получаю предложения от отелей...')
+    hotel_ids = [hotel['hotelId'] for hotel in hotels_by_city['data']]
+    try:
         hotel_offers = get_hotel_offers_search(
             hotel_ids=hotel_ids,
             check_in_date=check_in_date,
@@ -155,122 +172,140 @@ def do_search_hotels(message: Union[Message, CallbackQuery]) -> None:
             price_range=price_range,
             currency=currency_code
         )
+    except (ClientError, ConnectionError, Timeout, ReadTimeout) as error:
+        raise ExternalServiceUnavailable('get_hotel_offers_search') from error
 
-        hotels_dict = {hotel['hotelId']: hotel for hotel in hotels_by_city['data']}
-        hotels_with_offer = {}
-        for offer in hotel_offers.get('data', []):
-            if not offer.get('available'):
-                continue
+    # --- 4. Фильтрация отелей с доступными предложениями ---
+    hotels_dict = {hotel['hotelId']: hotel for hotel in hotels_by_city['data']}
+    hotels_with_offer = {}
+    for offer in hotel_offers.get('data', []):
+        if offer.get('available'):
             hotel_id = offer['hotel']['hotelId']
             if hotel_id in hotels_dict:
                 hotel = hotels_dict[hotel_id]
                 hotel['offer'] = offer['offers'][0]
                 hotels_with_offer[hotel_id] = hotel
-        if not hotels_with_offer:
-            bot.set_state(user_id, States.search_hotels_stop, chat_id)
-            safe_edit_message(
-                f'В городе {city_name} нет доступных отелей на выбранные '
-                f'даты в указанном ценовом диапазоне',
-                chat_id,
-                loading_message_id,
-                markup=gen_reply_controls_for_display()
-            )
-            return
-        message_info_3 = (f'Отели в городе {city_name} найдены.\n'
-                          f'Отели с предложениями найдены.\n'
-                          f'Подождите, получаю отзывы о отелях...')
-        loading_message_id = safe_edit_message(
-            message_info_3,
-            chat_id,
-            loading_message_id
-        )
-        # 3. Получаем отзывы
-        hotels_keys_with_offer = list(hotels_with_offer.keys())
-        hotel_sentiments = get_hotel_sentiments(hotels_keys_with_offer)
-    except (ClientError, ConnectionError, Timeout, ReadTimeout) as error:
-        logger.warning(f'Ошибка при обращении к Amadeus API: {error}, '
-                       f'запрос пользователя: {request}')
-        bot.set_state(user_id, States.search_hotels_stop, chat_id)
-        safe_edit_message(
-            f'⚠️ Проблема с подключением к сервису Amadeus!\n'
-            f'Повторите поиск позже, нажав кнопку '
-            f'{COMMANDS_TO_REPLY_KEYBOARD["Repeat search"]}',
-            chat_id,
-            loading_message_id,
-            markup=gen_reply_controls_for_display()
-        )
-        return
 
-    except RequestException as error:
-        logger.warning(f'Сетевая ошибка при обращении к Amadeus API: {error}')
-        bot.set_state(user_id, States.search_hotels_stop, chat_id)
-        safe_edit_message(
-            '🌐 Не удалось связаться с сервером Amadeus.\n'
-            'Проверьте соединение с интернетом или попробуйте позже',
-            chat_id,
-            loading_message_id,
-            markup=gen_reply_controls_for_display()
-        )
-        return
+    if not hotels_with_offer:
+        raise OffersNotFound()
 
-    except Exception as error:
-        logger.exception(f'Ошибка при поиске отелей: {error}, '
-                         f'запрос пользователя: {request}')
-        bot.set_state(user_id, States.search_hotels_stop, chat_id)
-        safe_edit_message(
-            f'😞 Что-то пошло не так! Повторите поиск позже, '
-            f'нажав кнопку {COMMANDS_TO_REPLY_KEYBOARD["Repeat search"]}',
-            chat_id,
-            loading_message_id,
-            markup=gen_reply_controls_for_display()
-        )
-        return
-
+    # --- 5. Получение отзывов (sentiments) ---
+    progress(f'Отели в городе {city_name} найдены.\n'
+             f'Отели с предложениями найдены.\n'
+             f'Подождите, получаю отзывы о отелях...')
+    hotels_keys_with_offer = list(hotels_with_offer.keys())
+    hotel_sentiments = get_hotel_sentiments(hotels_keys_with_offer)
     for sentiment in hotel_sentiments.get('data', []):
         hotels_with_offer[sentiment['hotelId']]['sentiments'] = sentiment
-    message_info_4 = (f'Отели в городе {city_name} найдены.\n'
-                      f'Отели с предложениями найдены.\n'
-                      f'Отзывы о отелях получены.\n'
-                      f'Сортирую отели...')
-    loading_message_id = safe_edit_message(
-        message_info_4,
-        chat_id,
-        loading_message_id
-    )
 
+    # --- 6. Сортировка ---
+    progress(f'Отели в городе {city_name} найдены.\n'
+             f'Отели с предложениями найдены.\n'
+             f'Отзывы о отелях получены.\n'
+             f'Сортирую отели...')
     sorting_hotels(hotels_keys_with_offer, hotels_with_offer, command)
 
-    with bot.retrieve_data(user_id, chat_id) as data:
-        response = data['response']
-        response.update({
-            'hotels_by_city': hotels_by_city,
-            'hotels_with_offer': hotels_with_offer,
-            'hotels_keys_with_offer': hotels_keys_with_offer,
-        })
-        data.update({
-            'num_hotel': num_hotel,
-            'num_hotels': len(hotels_with_offer),
-        })
-        request_data = data['request']
-        response_data = response
+    # --- 7. Возврат результата ---
+    return {
+        'hotels_by_city': hotels_by_city,
+        'hotels_with_offer': hotels_with_offer,
+        'hotels_keys_with_offer': hotels_keys_with_offer,
+    }
 
+
+def do_search_hotels(message: Union[Message, CallbackQuery]) -> None:
+    """
+    Основная логика поиска отелей:
+    1. Управляет процессом поиска, обновляя статус для пользователя.
+    2. Вызывает search_hotels_core для выполнения запросов к API.
+    3. Обрабатывает результаты и возможные ошибки.
+    4. Сохраняет результат в историю и состояние пользователя.
+    5. Передает управление функции отображения отелей.
+    """
+    user_id, chat_id = get_user_and_chat_ids(message)
+
+    with bot.retrieve_data(user_id, chat_id) as data:
+        request = data['request']
+        city_name = request['city']['name']
+        command = request['command']
+
+    # --- 1. Подготовка ---
+    msg_id = None
+
+    def on_progress(text: str):
+        nonlocal msg_id
+        # Эта функция будет вызываться из search_hotels_core
+        msg_id = safe_edit_message(text, chat_id, msg_id)
+
+    # --- 2. Вызов ядра поиска и обработка всех исключений ---
+    try:
+        search_result = search_hotels_core(
+            request,
+            on_progress=on_progress
+        )
+    except HotelNotFound:
+        fail_search(
+            user_id, chat_id, msg_id,
+            f'Отели в городе {city_name} не найдены.\n'
+            f'Измените параметры поиска.',
+            gen_reply_controls_for_display()
+        )
+        return
+    except OffersNotFound:
+        fail_search(
+            user_id, chat_id, msg_id,
+            f'В городе {city_name} нет доступных отелей на выбранные '
+            f'даты или в указанном ценовом диапазоне.',
+            gen_reply_controls_for_display()
+        )
+        return
+    except (ExternalServiceUnavailable, RequestException) as error:
+        logger.warning(f'Ошибка при поиске отелей: {error}, запрос: {request}')
+        fail_search(
+            user_id, chat_id, msg_id,
+            f'⚠️ Проблема с подключением к сервису Amadeus!\n'
+            f'Повторите поиск позже, нажав кнопку '
+            f'{COMMANDS_TO_REPLY_KEYBOARD["Repeat search"]}.',
+            gen_reply_controls_for_display()
+        )
+        return
+    except Exception as error:
+        logger.exception(f'Непредвиденная ошибка при поиске отелей: {error}, '
+                         f'запрос: {request}')
+        fail_search(
+            user_id, chat_id, msg_id,
+            f'😞 Что-то пошло не так! Повторите поиск позже, '
+            f'нажав кнопку {COMMANDS_TO_REPLY_KEYBOARD["Repeat search"]}.',
+            gen_reply_controls_for_display()
+        )
+        return
+
+    # --- 3. Обработка успешного результата ---
+    with bot.retrieve_data(user_id, chat_id) as data:
+        data['response'].update(search_result)
+        data.update({
+            'num_hotel': 0,
+            'num_hotels': len(search_result['hotels_with_offer']),
+        })
+
+    # --- 4. Сохранение в историю ---
     add_request_to_history(
         user_id,
         message.from_user.full_name,
-        request_data,
-        response_data['hotels_with_offer']
+        request,
+        search_result['hotels_with_offer']
     )
 
+    # --- 5. Переход к отображению отелей ---
     bot.set_state(user_id, States.display_hotels, chat_id)
-    safe_edit_message(
+    safe_delete_message(chat_id, msg_id)
+    bot.send_message(
+        chat_id,
         f'В городе {city_name} найдены следующие отели, '
         f'{sorting_order(command)}:',
-        chat_id,
-        loading_message_id,
-        markup=gen_reply_controls_for_display()
+        reply_markup=gen_reply_controls_for_display()
     )
     display_hotels(message)
-
 
 @bot.message_handler(state=States.search_hotels)
 def search_hotels_handler(message: Union[Message, CallbackQuery]) -> None:
@@ -282,6 +317,12 @@ def search_hotels_handler(message: Union[Message, CallbackQuery]) -> None:
     state=States.search_hotels_stop
 )
 def display_controls_handler(message: Message) -> None:
+    """
+    Обрабатывает управляющие сообщения от пользователя.
+
+    :param message: Управляющее сообщение от пользователя.
+    :return: None.
+    """
     user_id, chat_id = get_user_and_chat_ids(message)
     txt = message.text
 
@@ -376,7 +417,6 @@ active_photo_loads: dict[int, dict] = {}
 active_photo_loads_lock = threading.Lock()
 
 
-# @bot.message_handler(state=States.display_hotels)
 def display_hotels(message: Message | CallbackQuery) -> None:
     """
     Отображает информацию по текущему отелю и его фотографии.
