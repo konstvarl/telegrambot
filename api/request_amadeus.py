@@ -360,7 +360,7 @@ def get_hotel_offers_search(
 
 @api_cache(
     'amadeus.shopping.hotel_offer_search(offer_id).get',
-    ttl_hours=1
+    ttl_hours=24
 )
 @safe_request()
 def get_hotel_offer(offer_id: str, lang: str = None) -> dict:
@@ -476,7 +476,7 @@ def post_hotel_orders(
     'amadeus.e_reputation.hotel_sentiments.get',
     ttl_hours=720)
 @safe_request()
-def get_hotel_sentiments(hotel_ids: list[str]) -> dict:
+def get_hotel_sentiments_raw(hotel_ids: list[str]) -> dict:
     """
     Возвращает рейтинги и оценки отелей на основе отзывов клиентов.
 
@@ -509,6 +509,13 @@ def get_hotel_sentiments(hotel_ids: list[str]) -> dict:
         if pointer_right >= hotel_ids_len:
             pointer_right = hotel_ids_len
     return result
+
+def get_hotel_sentiments(hotel_ids: list[str]) -> dict:
+    try:
+        return get_hotel_sentiments_raw(hotel_ids)
+    except Exception as error:
+        logger.warning(f'Отзывы недоступны. Ошибка: {error}')
+        return {'data': []}
 
 
 if __name__ == '__main__':

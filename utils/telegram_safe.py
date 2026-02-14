@@ -1,13 +1,37 @@
+import logging
+
 from telebot.apihelper import ApiTelegramException
-from telebot.types import InlineKeyboardMarkup, InputMediaPhoto
+from telebot.types import (
+    InlineKeyboardMarkup, InputMediaPhoto, ReplyKeyboardMarkup
+)
 
 from loader import bot
+from states.user_states import States
 
 
-def safe_delete_message(chat_id: int, message_id: int | list[int]) -> None:
+def fail_search(
+        user_id: int,
+        chat_id: int,
+        msg_id: int | None,
+        text: str,
+        markup: ReplyKeyboardMarkup
+) -> None:
+    """
+    Универсальная обработка ошибок поиска: удаляет сообщение прогресса,
+    переводит состояние бота и отправляет уведомление пользователю.
+    """
+    safe_delete_message(chat_id, msg_id)
+    bot.set_state(user_id, States.search_hotels_stop, chat_id)
+    bot.send_message(chat_id, text, reply_markup=markup)
+
+
+def safe_delete_message(
+        chat_id: int,
+        message_id: int | list[int] | None
+) -> None:
     """
     Безопасно удаляет одно или несколько сообщений, игнорируя ошибки
-    если сообщение уже удалено.
+    если сообщение уже удалено или недоступно.
     """
     if message_id is None:
         return
@@ -19,22 +43,29 @@ def safe_delete_message(chat_id: int, message_id: int | list[int]) -> None:
         try:
             bot.delete_message(chat_id, mid)
         except ApiTelegramException as error:
-            print(f'[safe_delete_message] Ошибка при удалении {mid}:\n')
-            print(f'Функция {error.function_name}, код: {error.error_code}')
-            print(error.result_json['description'])
+            description = getattr(error, 'result_json', {}).get(
+                'description', 'no description'
+            )
+            logging.warning(
+                f'[safe_delete_message] Ошибка при удалении {mid} в чате {chat_id}:\n'
+                f'Функция {error.function_name}, код: {error.error_code}, '
+                f'описание {description}'
+            )
+        except Exception as exc:
+            logging.warning(f'[safe_delete_message] Не удалось удалить {mid} '
+                            f'в чате {chat_id}: {exc}')
 
 
 def safe_edit_message(
         text: str,
         chat_id: int,
-        message_id: int,
+        message_id: int | None = None,
         mode: str | None = None,
         markup: InlineKeyboardMarkup | None = None
 ) -> int:
     """
-    Безопасно редактирует сообщение, игнорируя ошибки
-    если сообщение уже удалено. Если сообщение для редактирования отсутствует,
-    то создает новое.
+    Безопасно редактирует сообщение или создает новое.
+    Если редактирование невозможно (удалено, ошибка) - отправляет новое.
 
     :param text: Новый текст сообщения.
     :param chat_id: Идентификатор чата.
@@ -43,75 +74,96 @@ def safe_edit_message(
     :param markup: Объект для inline-клавиатуры.
     :return: Идентификатор отредактированного/нового сообщения.
     """
-    try:
-        if message_id is None:
-            raise ValueError
+    new_message = None
+    if message_id is not None:
+        try:
+            new_message = bot.edit_message_text(
+                text, chat_id, message_id, parse_mode=mode,
+                reply_markup=markup
+            )
+            return new_message.message_id
+        except ApiTelegramException as exc:
+            description = getattr(exc, 'result_json', {}).get('description', '')
+            if 'message is not modified' in description:
+                return message_id
+        except Exception:
+            pass
 
-        new_message = bot.edit_message_text(
-            text, chat_id, message_id, parse_mode=mode, reply_markup=markup
-        )
-    except (ApiTelegramException, ValueError, TypeError) as exc:
-        if isinstance(exc, ApiTelegramException):
-            bot.delete_message(chat_id, message_id)
+    try:
         new_message = bot.send_message(
             chat_id, text, parse_mode=mode, reply_markup=markup
         )
-
-    return new_message.message_id
+        return new_message.message_id
+    except Exception as exc:
+        logging.warning(f'[safe_edit_message] Не удалось отправить '
+                        f'сообщение в чат {chat_id}: {exc}')
+        return -1
 
 
 def safe_edit_media(
         url_photo: str,
         photo_caption: str,
         chat_id: int,
-        message_id: int,
+        message_id: int | None,
         mode: str | None = None,
         markup: InlineKeyboardMarkup | None = None
 ) -> int | None:
     """
-    Безопасно редактирует фото-сообщение, игнорируя ошибки
-    если фото-сообщение, уже удалено. Если фото-сообщение, для редактирования
-    отсутствует, то создает новое.
+    Безопасно редактирует фото-сообщение или создает новое.
+    Любые ошибки редактирования (удалено, устарело) приводят
+    к созданию нового сообщения.
 
     :param url_photo: Ссылка на фотографию.
     :param photo_caption: Подпись к фотографии.
     :param chat_id: Идентификатор чата.
     :param message_id: Идентификатор редактируемого фото-сообщения.
-    :param mode: Режим парсинга нового подписи к фотографии.
+    :param mode: Режим парсинга новой подписи к фотографии.
     :param markup: Объект для inline-клавиатуры.
-    :return: Идентификатор отредактированного/нового сообщения.
+    :return: Идентификатор отредактированного/нового сообщения или None
+        при неудаче.
     """
-    try:
-        if message_id is None:
-            raise ValueError
-
-        new_media = InputMediaPhoto(
-            media=url_photo,
-            caption=photo_caption,
-            parse_mode=mode
-        )
-        new_message = bot.edit_message_media(
-            media=new_media,
-            chat_id=chat_id,
-            message_id=message_id,
-            reply_markup=markup
-        )
-    except ApiTelegramException:
+    if not url_photo:
+        logging.warning(f'[safe_edit_media] Пустой URL фото для чата {chat_id}')
         return None
 
-    except ValueError:
+    new_message = None
+
+    if message_id is not None:
         try:
-            new_message = bot.send_photo(
-                chat_id=chat_id,
-                photo=url_photo,
+            new_media = InputMediaPhoto(
+                media=url_photo,
                 caption=photo_caption,
-                parse_mode=mode,
+                parse_mode=mode
+            )
+            new_message = bot.edit_message_media(
+                media=new_media,
+                chat_id=chat_id,
+                message_id=message_id,
                 reply_markup=markup
             )
-        except (ApiTelegramException, ValueError):
-            return None
+            return new_message.message_id
+        except ApiTelegramException as exc:
+            description = getattr(exc,'result_json', {}).get('description', '')
+            if 'message is not modified' in description:
+                return message_id
+        except Exception:
+            pass
 
-    return new_message.message_id
+    try:
+        new_message = bot.send_photo(
+            chat_id=chat_id,
+            photo=url_photo,
+            caption=photo_caption,
+            parse_mode=mode,
+            reply_markup=markup
+        )
+        return new_message.message_id
+    except Exception as exc:
+        logging.warning(
+            f'[safe_edit_media] Не удалось отправить фото '
+            f'в чат {chat_id}: {exc}'
+        )
+        return None
 
 
 def safe_remove_markup(chat_id: int, message_id: int) -> None:
@@ -122,9 +174,15 @@ def safe_remove_markup(chat_id: int, message_id: int) -> None:
     :param message_id: Идентификатор сообщения.
     :return: None
     """
+    if message_id is None:
+        return
+
     try:
         bot.edit_message_reply_markup(
             chat_id, message_id, reply_markup=None
         )
     except ApiTelegramException:
         pass
+    except Exception as exc:
+        logging.warning(f'[safe_remove_markup] Не удалось убрать '
+                        f'клавиатуру {message_id}: {exc}')
