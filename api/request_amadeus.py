@@ -19,6 +19,22 @@ amadeus = Client(
 logger = logging.getLogger(__name__)
 
 
+class NoRoomsAvailable(Exception):
+    """Ошибка, возникающая при отсутствии доступных номеров."""
+    pass
+
+
+def is_no_rooms_error(error: HTTPError | ResponseError) -> bool:
+    """Проверяет, является ли ошибка ошибкой отсутствия доступных номеров."""
+    try:
+        if getattr(error.response, 'status_code', None) != 400:
+            return False
+
+        detail = error.response.result['errors'][0].get('detail')
+        return detail == 'NO ROOMS AVAILABLE AT REQUESTED PROPERTY'
+    except Exception:
+        return False
+
 def get_delay(
         attempt: int, retry_delay: int, retry_after: int | None = None
 ) -> float:
@@ -52,10 +68,17 @@ def safe_request(
                 except (HTTPError, ResponseError) as error:
                     last_error = error
                     status_code = getattr(error.response, 'status_code', None)
+
+                    if is_no_rooms_error(error):
+                        logger.info(
+                            f'[{func.__name__}] Нет доступных номеров.'
+                        )
+                        raise NoRoomsAvailable()
+
                     if status_code not in retryable_codes:
-                        logger.error(f'[{func.__name__}] HTTPError '
-                                     f'{status_code}: {error}')
-                        raise
+                            logger.error(f'[{func.__name__}] HTTPError '
+                                         f'{status_code}: {error}')
+                            raise
                     retry_after = None
                     headers = getattr(error.response, 'headers', {})
                     if isinstance(headers, dict):
@@ -251,11 +274,15 @@ def get_hotels_by_hotels(hotel_ids: list[str]) -> dict:
     return result
 
 
+@safe_request()
+def _hotel_offers_request(**params):
+    return amadeus.shopping.hotel_offers_search.get(**params)
+
+
 @api_cache(
     'amadeus.shopping.hotel_offers_search.get',
     ttl_hours=1
 )
-@safe_request()
 def get_hotel_offers_search(
         hotel_ids: list[str],
         guest_adults: int = 1,
@@ -343,18 +370,42 @@ def get_hotel_offers_search(
         'data': [],
         'meta': []
     }
-    while pointer_left < hotel_ids_len:
-        offer_params['hotelIds'] = ','.join(
-            hotel_ids[pointer_left:pointer_right]
-        )
-        response = amadeus.shopping.hotel_offers_search.get(**offer_params)
-        if response.result.get('data') is not None:
-            result['data'].extend(response.result.get('data'))
-        result['meta'].append(response.result.get('meta'))
+
+    def move_pointer():
+        nonlocal pointer_left, pointer_right
         pointer_left = pointer_right
         pointer_right += HOTEL_IDS_MAX
         if pointer_right >= hotel_ids_len:
             pointer_right = hotel_ids_len
+
+    while pointer_left < hotel_ids_len:
+        offer_params['hotelIds'] = ','.join(
+            hotel_ids[pointer_left:pointer_right]
+        )
+
+        try:
+            response = _hotel_offers_request(**offer_params)
+        except NoRoomsAvailable:
+            logger.info(
+                f'Нет доступных номеров для batch '
+                f'{hotel_ids[pointer_left:pointer_right]}'
+            )
+            move_pointer()
+            continue
+
+        except Exception as error:
+            logger.error(
+                f'Batch {hotel_ids[pointer_left:pointer_right]}'
+                f'не удалось получить {error}'
+            )
+            move_pointer()
+            continue
+
+        if response.result.get('data') is not None:
+            result['data'].extend(response.result.get('data'))
+        result['meta'].append(response.result.get('meta'))
+        move_pointer()
+
     return result
 
 
@@ -526,32 +577,32 @@ if __name__ == '__main__':
     if ratings_hotels.get('data'):
         for i_hotel in ratings_hotels['data']:
             print('\nРейтинг отеля')
-            print(f'идентификатор отеля: {i_hotel['hotelId']}')
-            print(f'общий рейтинг: {i_hotel['overallRating']}')
-            print(f'количество отзывов: {i_hotel['numberOfReviews']}')
-            print(f'количество оценок: {i_hotel['numberOfRatings']}')
+            print(f'идентификатор отеля: {i_hotel["hotelId"]}')
+            print(f'общий рейтинг: {i_hotel["overallRating"]}')
+            print(f'количество отзывов: {i_hotel["numberOfReviews"]}')
+            print(f'количество оценок: {i_hotel["numberOfRatings"]}')
             print('мнения')
             i_hotel_sentiments = i_hotel['sentiments']
-            print(f'\tперсонал: {i_hotel_sentiments['staff']}')
-            print(f'\tместоположение: {i_hotel_sentiments['location']}')
-            print(f'\tсервис: {i_hotel_sentiments['service']}')
-            print(f'\tудобства в номере: {i_hotel_sentiments['roomComforts']}')
-            print(f'\tинтернет: {i_hotel_sentiments['internet']}')
-            print(f'\tкачество сна: {i_hotel_sentiments['sleepQuality']}')
-            print(f'\tсоотношение цены и качества: {i_hotel_sentiments['valueForMoney']}')
-            print(f'\tоборудование: {i_hotel_sentiments['facilities']}')
-            print(f'\tорганизация питания: {i_hotel_sentiments['catering']}')
-            print(f'\tдостопримечательности: {i_hotel_sentiments['pointsOfInterest']}')
+            print(f'\tперсонал: {i_hotel_sentiments["staff"]}')
+            print(f'\tместоположение: {i_hotel_sentiments["location"]}')
+            print(f'\tсервис: {i_hotel_sentiments["service"]}')
+            print(f'\tудобства в номере: {i_hotel_sentiments["roomComforts"]}')
+            print(f'\tинтернет: {i_hotel_sentiments["internet"]}')
+            print(f'\tкачество сна: {i_hotel_sentiments["sleepQuality"]}')
+            print(f'\tсоотношение цены и качества: {i_hotel_sentiments["valueForMoney"]}')
+            print(f'\tоборудование: {i_hotel_sentiments["facilities"]}')
+            print(f'\tорганизация питания: {i_hotel_sentiments["catering"]}')
+            print(f'\tдостопримечательности: {i_hotel_sentiments["pointsOfInterest"]}')
     if ratings_hotels.get('warnings'):
         print('\nПредупреждения')
         for i_warning in ratings_hotels['warnings']:
-            print(f'Код: {i_warning['code']}')
-            print(f'Заголовок: {i_warning['title']}')
+            print(f'Код: {i_warning["code"]}')
+            print(f'Заголовок: {i_warning["title"]}')
             print(f'Источник')
             i_warning_source = i_warning['source']
-            print(f'\tпараметр: {i_warning_source['parameter']}')
-            print(f'\tуказатель: {i_warning_source['pointer']}')
-            print(f'Подробности: {i_warning['detail']}')
+            print(f'\tпараметр: {i_warning_source["parameter"]}')
+            print(f'\tуказатель: {i_warning_source["pointer"]}')
+            print(f'Подробности: {i_warning["detail"]}')
 
     key_city_1 = 'London'
     code_country = 'GB'
@@ -567,7 +618,7 @@ if __name__ == '__main__':
     if cities.get('data') is not None:
         for city in cities['data']:
             print(city)
-        print(f'Список отелей в городе {cities['data'][0]['name']}')
+        print(f'Список отелей в городе {cities["data"][0]["name"]}')
         hotels_by_city = get_hotels_by_city(
             city_code=cities['data'][0]['iataCode'],
             radius=5,
@@ -598,28 +649,28 @@ if __name__ == '__main__':
                 if offer['available']:
                     print(f'\nПредложение отеля ', end='')
                     print(offer['hotel']['name'])
-                    print(f'идентификатор отеля: {offer['hotel']['hotelId']}')
-                    print(f'широта: {offer['hotel']['latitude']}')
-                    print(f'долгота: {offer['hotel']['longitude']}')
+                    print(f'идентификатор отеля: {offer["hotel"]["hotelId"]}')
+                    print(f'широта: {offer["hotel"]["latitude"]}')
+                    print(f'долгота: {offer["hotel"]["longitude"]}')
                     for elem in offer['offers']:
                         print()
-                        print(f'Идентификатор предложения: {elem['id']}')
-                        print(f'Дата заезда: {elem['checkInDate']}')
-                        print(f'Дата выезда: {elem['checkOutDate']}')
+                        print(f'Идентификатор предложения: {elem["id"]}')
+                        print(f'Дата заезда: {elem["checkInDate"]}')
+                        print(f'Дата выезда: {elem["checkOutDate"]}')
                         print('Комната:')
-                        print(f'\tтип - {elem['room'].get('type', 'нет информации')}')
+                        print(f"\tтип - {elem['room'].get('type', 'нет информации')}")
                         print(
-                            f'\tкатегория - {elem['room']['typeEstimated'].get('category', 'нет информации')}'
+                            f"\tкатегория - {elem['room']['typeEstimated'].get('category', 'нет информации')}"
                         )
-                        print(f'\tкроватей - {elem['room']['typeEstimated'].get('beds', 'нет информации')}')
+                        print(f"\tкроватей - {elem['room']['typeEstimated'].get('beds', 'нет информации')}")
                         print(
-                            f'\tтип кровати - {elem['room']['typeEstimated'].get('bedType', 'нет информации')}'
+                            f"\tтип кровати - {elem['room']['typeEstimated'].get('bedType', 'нет информации')}"
                         )
-                        print(f'Описание: {elem['room']['description']['text']}')
+                        print(f"Описание: {elem['room']['description']['text']}")
                         print(f'Цена:')
-                        print(f'\tвалюта - {elem['price'].get('currency', 'нет информации')}')
-                        print(f'\tбазовая - {elem['price'].get('base', 'нет информации')}')
-                        print(f'\tобщая - {elem['price'].get('total', 'нет информации')}')
+                        print(f"\tвалюта - {elem['price'].get('currency', 'нет информации')}")
+                        print(f"\tбазовая - {elem['price'].get('base', 'нет информации')}")
+                        print(f"\tобщая - {elem['price'].get('total', 'нет информации')}")
                     hotel_Offer_Id = offer['offers'][0]['id']
                     print(f'Подтверждаем цену и условия по предложению {hotel_Offer_Id}')
                     hotel_offer = get_hotel_offer(
@@ -703,7 +754,7 @@ if __name__ == '__main__':
 
     if isinstance(response_locations, dict):
         if response_locations.get('errors') is None:
-            print(f'Ошибка: {response_locations['errors']}')
+            print(f"Ошибка: {response_locations['errors']}")
     else:
         num_page = 0
         err_num = 0
