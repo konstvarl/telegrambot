@@ -1,6 +1,7 @@
 import logging
 import random
 import time
+from datetime import datetime, timedelta
 from functools import wraps
 from http.client import RemoteDisconnected
 
@@ -8,7 +9,6 @@ from amadeus import Client, ResponseError, Response
 from requests.exceptions import ReadTimeout, HTTPError, ConnectionError
 
 from config_data.config import AMADEUS_API_KEY, AMADEUS_API_SECRET
-from database.data_storage import create_tables
 from utils.cache_response import api_cache
 
 amadeus = Client(
@@ -81,8 +81,7 @@ def safe_request(
                             raise
                     retry_after = None
                     headers = getattr(error.response, 'headers', {})
-                    if isinstance(headers, dict):
-                        retry_after = headers.get('Retry-After')
+                    retry_after = headers.get('Retry-After')
                     try:
                         retry_after = int(retry_after) if retry_after else None
                     except (ValueError, TypeError):
@@ -234,7 +233,7 @@ def get_hotels_by_city(
     if ratings is not None:
         params['ratings'] = ','.join(str(item) for item in ratings)
     else:
-        params['ratings'] = '1,3,4,5'
+        params['ratings'] = '1,3,4,5' # Будет поиск отелей с любым рейтингом
     response = amadeus.reference_data.locations.hotels.by_city.get(**params)
     return response.result
 
@@ -570,8 +569,7 @@ def get_hotel_sentiments(hotel_ids: list[str]) -> dict:
 
 
 if __name__ == '__main__':
-    create_tables()
-    list_hotel_ids = ['TELONMFS', 'PILONBHG', 'RTLONWAT', 'RILONJBG',
+    list_hotel_ids = ['TELONMfs', 'PILONBHG', 'RTLONWAT', 'RILONJBG',
                       'HOLON187', 'AELONCNP', 'MCLONGHM']
     ratings_hotels = get_hotel_sentiments(list_hotel_ids)
     if ratings_hotels.get('data'):
@@ -637,11 +635,13 @@ if __name__ == '__main__':
             for hotel in hotels_info['data']:
                 print(hotel)
 
+            check_in = datetime.now() + timedelta(days=7)
+            check_out = check_in + timedelta(days=3)
             hotel_offers = get_hotel_offers_search(
                 hotel_ids=hotel_Ids,
                 guest_adults=2,
-                check_in_date='2026-01-19',
-                check_out_date='2026-01-25',
+                check_in_date=check_in.strftime('%Y-%m-%d'),
+                check_out_date=check_out.strftime('%Y-%m-%d'),
                 lang='RU'
             )
 
@@ -763,11 +763,10 @@ if __name__ == '__main__':
             print(f'Страница {num_page}')
             for city in response_locations.data:
                 print(city)
-            err_count = 0
             try:
                 response_locations = amadeus.next(response_locations)
             except ResponseError as exc:
-                err_count += 1
-                if err_count == 3:
+                err_num += 1
+                if err_num == 3:
                     print(exc)
                     break

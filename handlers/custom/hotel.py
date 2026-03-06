@@ -215,12 +215,17 @@ def search_hotels_core(
 
 def do_search_hotels(message: Union[Message, CallbackQuery]) -> None:
     """
-    Основная логика поиска отелей:
-    1. Управляет процессом поиска, обновляя статус для пользователя.
-    2. Вызывает search_hotels_core для выполнения запросов к API.
-    3. Обрабатывает результаты и возможные ошибки.
-    4. Сохраняет результат в историю и состояние пользователя.
-    5. Передает управление функции отображения отелей.
+    Управляет процессом поиска отелей.
+
+    Не выполняет запросы к API напрямую, а координирует весь процесс:
+    1. Вызывает search_hotels_core для фактического поиска данных.
+    2. Отображает пользователю сообщения о прогрессе поиска.
+    3. Перехватывает и обрабатывает все возможные исключения,
+        информируя пользователя.
+    4. В случае успеха, сохраняет результаты в базу данных.
+    5. Обновляет состояние (FSM) пользователя.
+    6. Передает управление функции display_hotels для показа первого
+       найденного отеля.
     """
     user_id, chat_id = get_user_and_chat_ids(message)
 
@@ -229,15 +234,19 @@ def do_search_hotels(message: Union[Message, CallbackQuery]) -> None:
         city_name = request['city']['name']
         command = request['command']
 
-    # --- 1. Подготовка ---
+    # --- 1. Подготовка к поиску ---
     msg_id = None
 
     def on_progress(text: str):
+        """
+        Callback-функция для отображения прогресса.
+        Будет вызываться из search_hotels_core для обновления
+        статуса поиска в чате с пользователем.
+        """
         nonlocal msg_id
-        # Эта функция будет вызываться из search_hotels_core
         msg_id = safe_edit_message(text, chat_id, msg_id)
 
-    # --- 2. Вызов ядра поиска и обработка всех исключений ---
+    # --- 2. Основной блок: вызов ядра поиска и обработка всех исключений ---
     try:
         search_result = search_hotels_core(
             request,
@@ -280,23 +289,24 @@ def do_search_hotels(message: Union[Message, CallbackQuery]) -> None:
         )
         return
 
-    # --- 3. Обработка успешного результата ---
-    with bot.retrieve_data(user_id, chat_id) as data:
-        data['response'].update(search_result)
-        data.update({
-            'num_hotel': 0,
-            'num_hotels': len(search_result['hotels_with_offer']),
-        })
-
-    # --- 4. Сохранение в историю ---
-    add_request_to_history(
+    # --- 3. Сохранение успешного результата в историю (БД) ---
+    request_record = add_request_to_history(
         user_id,
         message.from_user.full_name,
         request,
         search_result['hotels_with_offer']
     )
 
-    # --- 5. Переход к отображению отелей ---
+    # --- 4. Обновление состояния пользователя (FSM) ---
+    with bot.retrieve_data(user_id, chat_id) as data:
+        data['response'].update(search_result)
+        data.update({
+            'num_hotel': 0,
+            'num_hotels': len(search_result['hotels_with_offer']),
+            'request_record': request_record,
+        })
+
+    # --- 5. Переход к отображению результатов ---
     bot.set_state(user_id, States.display_hotels, chat_id)
     safe_delete_message(chat_id, msg_id)
     bot.send_message(
@@ -306,6 +316,7 @@ def do_search_hotels(message: Union[Message, CallbackQuery]) -> None:
         reply_markup=gen_reply_controls_for_display()
     )
     display_hotels(message)
+
 
 @bot.message_handler(state=States.search_hotels)
 def search_hotels_handler(message: Union[Message, CallbackQuery]) -> None:
