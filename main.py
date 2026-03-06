@@ -26,12 +26,12 @@ def start_polling(tg_bot: TeleBot):
             tg_bot.infinity_polling(timeout=60, long_polling_timeout=20)
         except (ConnectionError, ReadTimeout, RemoteDisconnected) as error:
             plogger.warning(f'⚠️ Потеряно соединение с Telegram: {error}. '
-                           f'Перезапуск через 5 сек...')
+                            f'Перезапуск через 5 сек...')
             sleep(5)
         except ApiTelegramException as error:
             if error.error_code == 429:
                 plogger.warning('⏳ Telegram API: Слишком много запросов. '
-                               'Перезапуск через 10 сек...')
+                                'Перезапуск через 10 сек...')
                 sleep(10)
             else:
                 plogger.error(f'Ошибка Telegram API: {error}')
@@ -53,7 +53,7 @@ if __name__ == '__main__':
 
     file_handler = RotatingFileHandler(
         'bot.log',
-        maxBytes=5*1024*1024,
+        maxBytes=5 * 1024 * 1024,
         backupCount=1,
         encoding='utf-8'
     )
@@ -65,6 +65,11 @@ if __name__ == '__main__':
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
+
+    from database.data_storage import create_tables
+
+    create_tables()
+
     bot.add_custom_filter(StateFilter(bot))
     set_default_commands(bot)
     start_polling(bot)

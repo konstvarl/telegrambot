@@ -106,7 +106,7 @@ def add_request_to_history(
         user_name: str,
         request_data: dict[str, Any],
         hotels_data: dict[str, dict[str, Any]]
-):
+) -> Request:
     """
     Сохраняет запрос пользователя и найденные отели в историю.
 
@@ -114,6 +114,7 @@ def add_request_to_history(
     :param user_name: Имя пользователя.
     :param request_data: Словарь с данными запроса.
     :param hotels_data: Словарь с данными отелей.
+    :return: Созданная запись запроса.
     """
     user, created = User.get_or_create(
         id=user_id, defaults={'name': user_name}
@@ -135,10 +136,6 @@ def add_request_to_history(
         price_range=request_data['range_prices'],
         radius=request_data['radius'],
     )
-
-    from loader import bot
-    with bot.retrieve_data(user_id) as data:
-        data['request_record'] = request_record
 
     hotels_to_create = []
     for hotel_id, hotel in hotels_data.items():
@@ -165,6 +162,8 @@ def add_request_to_history(
     if hotels_to_create:
         Hotel.bulk_create(hotels_to_create, batch_size=50)
 
+    return request_record
+
 
 def get_user_history(user_id: int, search_date: date | None = None) -> list[Dict]:
     """
@@ -172,7 +171,7 @@ def get_user_history(user_id: int, search_date: date | None = None) -> list[Dict
     Можно указать дату для фильтрации (по полю created_at).
 
     :param user_id: Идентификатор пользователя.
-    :param search_date: Датаб за которую нужно получить историю.
+    :param search_date: Дата за которую нужно получить историю.
     :return: Список словарей с запросами и вложенным списком отелей.
     """
     user = User.get_or_none(User.id == user_id)
