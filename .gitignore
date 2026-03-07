@@ -133,3 +133,6 @@ dmypy.json
 # TelegramBot
 database/data_history.db
 debug/
+# Логи
+*.log
+*.log.*
