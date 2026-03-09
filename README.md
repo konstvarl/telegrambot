@@ -1,6 +1,6 @@
 # Hotel Search Bot for Telegram
 
-[![Python](https://img.shields.io/badge/Python-3.10-blue.svg)](https://www.python.org/downloads/release/python-3100/) [![pyTelegramBotAPI](https://img.shields.io/badge/pyTelegramBotAPI-4.4.0-blue.svg)](https://pypi.org/project/pyTelegramBotAPI/) [![Peewee](https://img.shields.io/badge/Peewee-3.14.4-blue.svg)](https://pypi.org/project/peewee/) [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/) [![pyTelegramBotAPI](https://img.shields.io/badge/pyTelegramBotAPI-4.26.0-blue.svg)](https://pypi.org/project/pyTelegramBotAPI/4.26.0/) [![Peewee](https://img.shields.io/badge/Peewee-3.17.9-blue.svg)](https://pypi.org/project/peewee/3.17.9/) [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > **⚠️ Важное примечание**
 >
